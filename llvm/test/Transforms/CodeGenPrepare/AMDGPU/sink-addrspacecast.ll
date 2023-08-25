@@ -1,4 +1,4 @@
-; RUN: opt -S -codegenprepare -mtriple=amdgcn--amdhsa < %s | FileCheck %s
+; RUN: opt -S -passes=codegenprepare -mtriple=amdgcn--amdhsa < %s | FileCheck %s
 
 ; CHECK-LABEL: @no_sink_local_to_flat(
 ; CHECK: addrspacecast

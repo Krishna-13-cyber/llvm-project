@@ -268,7 +268,7 @@ static cl::opt<unsigned>
     MaxAddressUsersToScan("cgp-max-address-users-to-scan", cl::init(100),
                           cl::Hidden,
                           cl::desc("Max number of address users to look at"));
-namespace {
+namespace llvm{
 
 enum ExtType {
   ZeroExtension, // Zero extension has been seen.
@@ -296,7 +296,7 @@ using ValueToSExts = MapVector<Value *, SExts>;
 
 class TypePromotionTransaction;
 
-class CodeGenPrepare : public FunctionPass {
+class CodeGenPrepare {
   const TargetMachine *TM = nullptr;
   const TargetSubtargetInfo *SubtargetInfo = nullptr;
   const TargetLowering *TLI = nullptr;
@@ -369,61 +369,6 @@ public:
   /// to insert such BB into FreshBBs for huge function.
   SmallSet<BasicBlock *, 32> FreshBBs;
 
-  static char ID; // Pass identification, replacement for typeid
-
-  CodeGenPrepare() : FunctionPass(ID) {
-    initializeCodeGenPreparePass(*PassRegistry::getPassRegistry());
-  }
-
-  bool runOnFunction(Function &F) override;
-
-  void releaseMemory() override {
-    // Clear per function information.
-    InsertedInsts.clear();
-    PromotedInsts.clear();
-    FreshBBs.clear();
-    BPI.reset();
-    BFI.reset();
-  }
-
-  StringRef getPassName() const override { return "CodeGen Prepare"; }
-
-  void getAnalysisUsage(AnalysisUsage &AU) const override {
-    // FIXME: When we can selectively preserve passes, preserve the domtree.
-    AU.addRequired<ProfileSummaryInfoWrapperPass>();
-    AU.addRequired<TargetLibraryInfoWrapperPass>();
-    AU.addRequired<TargetPassConfig>();
-    AU.addRequired<TargetTransformInfoWrapperPass>();
-    AU.addRequired<LoopInfoWrapperPass>();
-    AU.addUsedIfAvailable<BasicBlockSectionsProfileReader>();
-  }
-
-private:
-  template <typename F>
-  void resetIteratorIfInvalidatedWhileCalling(BasicBlock *BB, F f) {
-    // Substituting can cause recursive simplifications, which can invalidate
-    // our iterator.  Use a WeakTrackingVH to hold onto it in case this
-    // happens.
-    Value *CurValue = &*CurInstIterator;
-    WeakTrackingVH IterHandle(CurValue);
-
-    f();
-
-    // If the iterator instruction was recursively deleted, start over at the
-    // start of the block.
-    if (IterHandle != CurValue) {
-      CurInstIterator = BB->begin();
-      SunkAddrs.clear();
-    }
-  }
-
-  // Get the DominatorTree, building if necessary.
-  DominatorTree &getDT(Function &F) {
-    if (!DT)
-      DT = std::make_unique<DominatorTree>(F);
-    return *DT;
-  }
-
   void removeAllAssertingVHReferences(Value *V);
   bool eliminateAssumptions(Function &F);
   bool eliminateFallThrough(Function &F, DominatorTree *DT = nullptr);
@@ -481,13 +426,75 @@ private:
   bool combineToUSubWithOverflow(CmpInst *Cmp, ModifyDT &ModifiedDT);
   bool combineToUAddWithOverflow(CmpInst *Cmp, ModifyDT &ModifiedDT);
   void verifyBFIUpdates(Function &F);
+
+    void releaseMemory() {
+    // Clear per function information.
+    InsertedInsts.clear();
+    PromotedInsts.clear();
+    FreshBBs.clear();
+    BPI.reset();
+    BFI.reset();
+  }
+  bool run(Function &F, const TargetMachine *TM,
+                              const TargetTransformInfo &TTI,
+                              const LoopInfo &LI);
+                              
+  StringRef getPassName() const { return "CodeGen Prepare"; }
+
+  void getAnalysisUsage(AnalysisUsage &AU) const {
+    // FIXME: When we can selectively preserve passes, preserve the domtree.
+    AU.addRequired<ProfileSummaryInfoWrapperPass>();
+    AU.addRequired<TargetLibraryInfoWrapperPass>();
+    AU.addRequired<TargetPassConfig>();
+    AU.addRequired<TargetTransformInfoWrapperPass>();
+    AU.addRequired<LoopInfoWrapperPass>();
+    AU.addUsedIfAvailable<BasicBlockSectionsProfileReader>();
+  }
+
+private:
+  template <typename F>
+  void resetIteratorIfInvalidatedWhileCalling(BasicBlock *BB, F f) {
+    // Substituting can cause recursive simplifications, which can invalidate
+    // our iterator.  Use a WeakTrackingVH to hold onto it in case this
+    // happens.
+    Value *CurValue = &*CurInstIterator;
+    WeakTrackingVH IterHandle(CurValue);
+
+    f();
+
+    // If the iterator instruction was recursively deleted, start over at the
+    // start of the block.
+    if (IterHandle != CurValue) {
+      CurInstIterator = BB->begin();
+      SunkAddrs.clear();
+    }
+  }
+
+  // Get the DominatorTree, building if necessary.
+  DominatorTree &getDT(Function &F) {
+    if (!DT)
+      DT = std::make_unique<DominatorTree>(F);
+    return *DT;
+  }
+
+  // bool runOnFunction(Function &F);
+};
+
+ class CodeGenPrepareLegacy : public FunctionPass {
+ public:
+   static char ID; // Pass identification, replacement for typeid
+   bool runOnFunction(Function &F);
+
+   CodeGenPrepareLegacy() : FunctionPass(ID) {
+     initializeCodeGenPrepareLegacyPass(*PassRegistry::getPassRegistry());
+   }
 };
 
 } // end anonymous namespace
 
-char CodeGenPrepare::ID = 0;
+char CodeGenPrepareLegacy::ID = 0;
 
-INITIALIZE_PASS_BEGIN(CodeGenPrepare, DEBUG_TYPE,
+INITIALIZE_PASS_BEGIN(CodeGenPrepareLegacy, DEBUG_TYPE,
                       "Optimize for code generation", false, false)
 INITIALIZE_PASS_DEPENDENCY(BasicBlockSectionsProfileReader)
 INITIALIZE_PASS_DEPENDENCY(LoopInfoWrapperPass)
@@ -495,20 +502,55 @@ INITIALIZE_PASS_DEPENDENCY(ProfileSummaryInfoWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(TargetLibraryInfoWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(TargetPassConfig)
 INITIALIZE_PASS_DEPENDENCY(TargetTransformInfoWrapperPass)
-INITIALIZE_PASS_END(CodeGenPrepare, DEBUG_TYPE, "Optimize for code generation",
+INITIALIZE_PASS_END(CodeGenPrepareLegacy, DEBUG_TYPE, "Optimize for code generation",
                     false, false)
 
-FunctionPass *llvm::createCodeGenPreparePass() { return new CodeGenPrepare(); }
+FunctionPass *llvm::createCodeGenPreparePass() {
+ return new CodeGenPrepareLegacy();
+}
 
-bool CodeGenPrepare::runOnFunction(Function &F) {
+bool  CodeGenPrepareLegacy::runOnFunction(Function &F) {
   if (skipFunction(F))
+    return false;
+
+  auto *TPC = getAnalysisIfAvailable<TargetPassConfig>();
+  if (!TPC)
+    return false;
+
+  auto *TM = &TPC->getTM<TargetMachine>();
+  auto &TTI = getAnalysis<TargetTransformInfoWrapperPass>().getTTI(F);
+  auto &LI = getAnalysis<LoopInfoWrapperPass>().getLoopInfo();
+
+  CodeGenPrepare CGP;
+  return CGP.run(F, TM, TTI, LI);
+}
+
+PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM) {
+ auto &TTI = AM.getResult<TargetIRAnalysis>(F);
+ auto &LI = AM.getResult<LoopAnalysis>(F);
+  
+ CodeGenPrepare CGP; 
+ bool Changed = CGP.run(F, TM, TTI, LI);
+ if (!Changed)
+   return PreservedAnalyses::all();
+
+ PreservedAnalyses PA;
+ PA.preserveSet<CFGAnalyses>();
+ PA.preserve<LoopAnalysis>();
+ return PA;
+}
+
+bool CodeGenPrepare::run(Function &F, const TargetMachine *TM,
+                            const TargetTransformInfo &TTI,
+                            const LoopInfo &LI) {
+  if (DisableBranchOpts)
     return false;
 
   DL = &F.getParent()->getDataLayout();
 
   bool EverMadeChange = false;
 
-  TM = &getAnalysis<TargetPassConfig>().getTM<TargetMachine>();
+  TM = &getAnalysisUsage<TargetPassConfig>().getTM<TargetMachine>();
   SubtargetInfo = TM->getSubtargetImpl(F);
   TLI = SubtargetInfo->getTargetLowering();
   TRI = SubtargetInfo->getRegisterInfo();
@@ -2600,7 +2642,7 @@ bool CodeGenPrepare::dupRetToEnableTailCallOpts(BasicBlock *BB,
 // Memory Optimization
 //===----------------------------------------------------------------------===//
 
-namespace {
+namespace llvm {
 
 /// This is an extended version of TargetLowering::AddrMode
 /// which holds actual Value*'s for register values.
@@ -2771,7 +2813,7 @@ LLVM_DUMP_METHOD void ExtAddrMode::dump() const {
 
 } // end anonymous namespace
 
-namespace {
+namespace llvm{
 
 /// This class provides transaction based operation on the IR.
 /// Every change made through this class is recorded in the internal state and
@@ -3274,7 +3316,7 @@ void TypePromotionTransaction::rollback(
   }
 }
 
-namespace {
+namespace llvm {
 
 /// A helper class for matching addressing modes.
 ///
@@ -4200,7 +4242,7 @@ static bool isPromotedInstructionLegal(const TargetLowering &TLI,
       ISDOpcode, TLI.getValueType(DL, PromotedInst->getType()));
 }
 
-namespace {
+namespace llvm{
 
 /// Hepler class to perform type promotion.
 class TypePromotionHelper {
@@ -7359,7 +7401,7 @@ bool CodeGenPrepare::optimizeSwitchInst(SwitchInst *SI) {
   return Changed;
 }
 
-namespace {
+namespace llvm{
 
 /// Helper class to promote a scalar operation to a vector one.
 /// This class is used to move downward extractelement transition.
